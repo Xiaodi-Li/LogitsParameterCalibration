@@ -82,7 +82,7 @@ class EWC(L2):
     """
 
     def __init__(self, args, agent_config):
-        super(EWC, self).__init__(agent_config)
+        super(EWC, self).__init__(args, agent_config)
         self.online_reg = False
         self.args = args
         self.n_fisher_sample = None
@@ -164,8 +164,8 @@ class EWC(L2):
         return importance
 
 
-def EWC_online(agent_config):
-    agent = EWC(agent_config)
+def EWC_online(args, agent_config):
+    agent = EWC(args, agent_config)
     agent.online_reg = True
     return agent
 
@@ -350,3 +350,111 @@ class MAS(L2):
         self.train(mode=mode)
 
         return importance
+
+class LPC(L2):
+
+    def __init__(self, args, agent_config):
+        super(LPC, self).__init__(args, agent_config)
+        self.online_reg = True
+        self.args = args
+        self.n_fisher_sample = None
+        self.empFI = False
+
+    def calculate_importance(self, dataloader):
+        # Update the diag fisher information
+        # There are several ways to estimate the F matrix.
+        # We keep the implementation as simple as possible while maintaining a similar performance to the literature.
+        self.log('Computing LPC')
+
+        # Initialize the importance matrix
+        if self.online_reg and len(self.regularization_terms) > 0:
+            importance = self.regularization_terms[1]['importance']
+        else:
+            importance = {}
+            for n, p in self.params.items():
+                importance[n] = p.clone().detach().fill_(0)  # zero initialized
+
+        # Sample a subset (n_fisher_sample) of data to estimate the fisher information (batch_size=1)
+        # Otherwise it uses mini-batches for the estimation. This speeds up the process a lot with similar performance.
+        if self.n_fisher_sample is not None:
+            n_sample = min(self.n_fisher_sample, len(dataloader.dataset))
+            self.log('Sample', self.n_fisher_sample, 'for estimating the F matrix.')
+            rand_ind = random.sample(list(range(len(dataloader.dataset))), n_sample)
+            subdata = torch.utils.data.Subset(dataloader.dataset, rand_ind)
+            dataloader = torch.utils.data.DataLoader(subdata, shuffle=True, num_workers=2, batch_size=1)
+
+        mode = self.training
+        self.eval()
+
+        # Accumulate the square of gradients
+        for i, (input, target, task) in enumerate(dataloader):
+            if self.gpu:
+                target = target.cuda()
+                if isinstance(input, list):
+                    input = tuple(t.cuda() for t in input)
+                    input = {"input_ids": input[0], "attention_mask": input[1], "token_type_ids": (input[2]),
+                             "labels": target}
+                    # input["token_type_ids"] = (input[2])  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
+                else:
+                    input = input.cuda()
+
+            preds = self.forward(input)
+
+            # Sample the labels for estimating the gradients
+            # For multi-headed model, the batch of data will be from the same task,
+            # so we just use task[0] as the task name to fetch corresponding predictions
+            # For single-headed model, just use the max of predictions from preds['All']
+            # The flag self.valid_out_dim is for handling the case of incremental class learning.
+            # if self.valid_out_dim is an integer, it means only the first 'self.valid_out_dim' dimensions are used
+            # in calculating the loss.
+            if isinstance(preds, SequenceClassifierOutput):
+                ind = preds[:2][1].max(1)[1].flatten()
+            else:
+                task_name = task[0] if self.multihead else 'All'
+                pred = preds[task_name] if not isinstance(self.valid_out_dim, int) else preds[task_name][:,
+                                                                                        :self.valid_out_dim]
+                ind = pred.max(1)[1].flatten()  # Choose the one with max
+
+            # - Alternative ind by multinomial sampling. Its performance is similar. -
+            # prob = torch.nn.functional.softmax(preds['All'],dim=1)
+            # ind = torch.multinomial(prob,1).flatten()
+
+            if self.empFI:  # Use groundtruth label (default is without this)
+                ind = target
+            if isinstance(preds, SequenceClassifierOutput):
+                loss = self.criterion(preds, target, task, regularization=False)
+            else:
+                loss = self.criterion(preds, ind, task, regularization=False)
+            self.model.zero_grad()
+            loss.backward()
+            for n, p in importance.items():
+                if self.params[n].grad is not None:  # Some heads can have no grad if no loss applied on them.
+                    p += ((self.params[n].grad ** 2) * len(input) / len(dataloader))
+
+        self.train(mode=mode)
+
+        return importance
+
+    def criterion(self, inputs, targets, tasks, regularization=True, **kwargs):
+        loss = super(LPC, self).criterion(inputs, targets, tasks, **kwargs)
+        if isinstance(inputs, SequenceClassifierOutput):
+            pred = inputs[:2][1]
+        else:
+            task_name = tasks[0] if self.multihead else 'All'
+            pred = inputs[task_name] if not isinstance(self.valid_out_dim, int) else inputs[task_name][:,
+                                                                                    :self.valid_out_dim]
+        pred = torch.pow(pred, 2)
+        loss_mas = pred.mean()
+
+        if regularization and len(self.regularization_terms)>0:
+            # Calculate the reg_loss only when the regularization_terms exists
+            reg_loss = 0
+            for i,reg_term in self.regularization_terms.items():
+                task_reg_loss = 0
+                importance = reg_term['importance']
+                task_param = reg_term['task_param']
+                for n, p in self.params.items():
+                    task_reg_loss += (importance[n] * (p - task_param[n]) ** 2).sum()
+                reg_loss += task_reg_loss
+            loss += self.config['reg_coef'] * reg_loss + loss_mas
+        return loss

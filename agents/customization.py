@@ -1,6 +1,6 @@
 import torch
 from .default import NormalNN
-from .regularization import SI, EWC, EWC_online, MAS
+from .regularization import SI, EWC, EWC_online, MAS, LPC
 from .exp_replay import Naive_Rehearsal, GEM
 from modules.criterions import BCEauto
 
@@ -124,6 +124,49 @@ def MAS_rand_init(agent_config):
 
 def MAS_reset_optim(agent_config):
     agent = MAS(agent_config)
+    agent.reset_optimizer = True
+    return agent
+
+def LPC_BCE(agent_config):
+    agent = LPC(agent_config)
+    agent.criterion_fn = BCEauto()
+    return agent
+
+
+def LPC_mnist(agent_config):
+    agent = LPC(agent_config)
+    agent.n_fisher_sample = 60000
+    return agent
+
+
+def LPC_online_mnist(agent_config):
+    agent = LPC(agent_config)
+    agent.n_fisher_sample = 60000
+    agent.online_reg = True
+    return agent
+
+
+def LPC_online_empFI(agent_config):
+    agent = LPC(agent_config)
+    agent.empFI = True
+    return agent
+
+
+def LPC_zero_init(agent_config):
+    agent = LPC(agent_config)
+    agent.reset_optimizer = True
+    agent.model.last.apply(init_zero_weights)
+    return agent
+
+
+def LPC_rand_init(agent_config):
+    agent = LPC(agent_config)
+    agent.reset_optimizer = True
+    return agent
+
+
+def LPC_reset_optim(agent_config):
+    agent = LPC(agent_config)
     agent.reset_optimizer = True
     return agent
 
