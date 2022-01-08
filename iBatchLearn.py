@@ -58,8 +58,8 @@ def run(args):
         os.mkdir('outputs')
 
     if args.dataset == 'glue':
-        task_names = ['sts-b', 'cola', 'mrpc', 'qnli', 'rte', 'sst-2', 'wnli']
-        data_task_names = ['STS-B', 'CoLA', 'MRPC', 'QNLI', 'RTE', 'SST-2', 'WNLI']
+        task_names = ['cola', 'mrpc', 'qnli', 'rte', 'sst-2', 'wnli']
+        data_task_names = ['CoLA', 'MRPC', 'QNLI', 'RTE', 'SST-2', 'WNLI']
 
     if args.model_type == 'transformer_models':
 
@@ -217,6 +217,7 @@ def run(args):
             for j in range(k+1):
                 val_name = task_names[j]
                 print('validation split name:', val_name)
+                val_dataset_all = torch.utils.data.ConcatDataset(val_datasets_splits[val_name].values())
                 val_data = val_dataset_all if not args.eval_on_train_set else train_dataset_all
                 val_loader = torch.utils.data.DataLoader(val_data,
                                                          batch_size=args.batch_size, shuffle=False,
@@ -364,8 +365,8 @@ def get_args(argv):
 if __name__ == '__main__':
     args = get_args(sys.argv[1:])
     if args.dataset == 'glue':
-        task_names = ['sts-b', 'cola', 'mrpc', 'qnli', 'rte', 'sst-2', 'wnli']
-        data_task_names = ['STS-B', 'CoLA', 'MRPC', 'QNLI', 'RTE', 'SST-2', 'WNLI']
+        task_names = ['cola', 'mrpc', 'qnli', 'rte', 'sst-2', 'wnli']
+        data_task_names = ['CoLA', 'MRPC', 'QNLI', 'RTE', 'SST-2', 'WNLI']
     if args.offline_training:
         args.output_mode = output_modes[args.task_name]
         reg_coef_list = args.reg_coef
@@ -485,7 +486,7 @@ if __name__ == '__main__':
                 # Print the summary so far
                 print('===Summary of experiment repeats:', r + 1, '/', args.repeat, '===')
                 print('The regularization coefficient:', args.reg_coef)
-                print('The last avg corr of all repeats:', avg_final_metrics[reg_coef])
+                print('The last avg metric of all repeats:', avg_final_metrics[reg_coef])
                 print('mean metrics:', avg_final_metrics[reg_coef].mean(), 'std metrics:', avg_final_metrics[reg_coef].std())
 
         for reg_coef, v in avg_final_metrics.items():
